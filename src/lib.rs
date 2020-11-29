@@ -323,7 +323,8 @@ impl<T> DycoVec<T> {
             if index < self.len() {
                 // SAFE: we get some arbitrary pointer back for a ZST, whose
                 // pointers are neither actually read nor written to. ie, it
-                // doesn't matter what pointer is given.
+                // doesn't matter what pointer is given, as long as it's
+                // aligned and nonnull.
                 Some(unsafe { self.get_unchecked(index) })
             } else {
                 None
@@ -345,7 +346,8 @@ impl<T> DycoVec<T> {
             if index < self.len() {
                 // SAFE: we get some arbitrary pointer back for a ZST, whose
                 // pointers are neither actually read nor written to. ie, it
-                // doesn't matter what pointer is given.
+                // doesn't matter what pointer is given, as long as it's
+                // aligned and nonnull.
                 Some(unsafe { self.get_unchecked_mut(index) })
             } else {
                 None
