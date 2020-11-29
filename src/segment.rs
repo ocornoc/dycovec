@@ -1,4 +1,5 @@
 use core::{
+    ptr::NonNull,
     hash::{Hash, Hasher},
     ops::{Deref, DerefMut},
     convert::{AsRef, AsMut, TryFrom},
@@ -217,7 +218,7 @@ impl<T> Segment<T> {
 
     pub fn as_slice(&self) -> &[T] {
         if Self::T_ZST {
-            unsafe { core::slice::from_raw_parts(self as *const Self as *const T, self.len()) }
+            unsafe { core::slice::from_raw_parts(NonNull::dangling().as_ptr(), self.len()) }
         } else {
             let head = self.head.load(Ordering::Acquire);
 
@@ -244,7 +245,7 @@ impl<T> Segment<T> {
     #[allow(clippy::mut_mut)]
     pub fn as_slice_mut(&mut self) -> &mut [T] {
         if Self::T_ZST {
-            unsafe { core::slice::from_raw_parts_mut(self as *mut Self as *mut T, self.len()) }
+            unsafe { core::slice::from_raw_parts_mut(NonNull::dangling().as_ptr(), self.len()) }
         } else {
             let head = self.head.load(Ordering::Acquire);
 

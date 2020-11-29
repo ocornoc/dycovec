@@ -9,6 +9,7 @@ extern crate alloc;
 use core::{
     convert::TryInto,
     iter::FromIterator,
+    ptr::NonNull,
     ops::{Index, IndexMut},
     hash::{Hash, Hasher},
     fmt::{Debug, Formatter, Result as FmtResult},
@@ -297,10 +298,7 @@ impl<T> DycoVec<T> {
     /// Index `self` by `index`
     pub unsafe fn get_unchecked(&self, index: usize) -> &T {
         if Self::T_ZST {
-            // we can't use core::ptr::null() here as a dummy because rust has
-            // an optimization that gives Option<&T> the same size as &T by
-            // making the 'null' reference None.
-            &*(1 as *const T)
+            NonNull::<T>::dangling().as_ptr().as_ref().unwrap()
         } else {
             let (seg_id, local_index) = id_to_seg_lid(index);
             
@@ -311,10 +309,7 @@ impl<T> DycoVec<T> {
     /// Mutably index `self` by `index`
     pub unsafe fn get_unchecked_mut(&mut self, index: usize) -> &mut T {
         if Self::T_ZST {
-            // we can't use core::ptr::null_mut() here as a dummy because rust
-            // has an optimization that gives Option<&mut T> the same size as
-            // &mut T by making the 'null' reference None.
-            &mut *(1 as *mut T)
+            NonNull::<T>::dangling().as_ptr().as_mut().unwrap()
         } else {
             let (seg_id, local_index) = id_to_seg_lid(index);
 
