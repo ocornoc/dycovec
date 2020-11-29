@@ -4,5 +4,7 @@ version = "0.1.0"
 authors = ["Grayson Burton <ocornoc@protonmail.com>"]
 edition = "2018"
 license = "MIT OR Apache-2.0"
+description = "A dynamically-allocated, concurrent vector"
+repository = "https://github.com/ocornoc/dycovec"
 
 [dependencies]
