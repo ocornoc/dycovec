@@ -6,7 +6,7 @@ edition = "2018"
 license = "MIT OR Apache-2.0"
 description = "A dynamically-allocated, concurrent vector"
 repository = "https://github.com/ocornoc/dycovec"
-include = ["src/**/*", "LICENSE-*", "README.md"]
+include = ["benches/**/*", "src/**/*", "LICENSE-*", "README.md"]
 
 [dev-dependencies]
 criterion = "0.3"
