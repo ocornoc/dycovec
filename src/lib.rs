@@ -161,6 +161,12 @@ impl<T> Extend<T> for DycoVec<T> {
     }
 }
 
+impl<T> Default for DycoVec<T> {
+    fn default() -> Self {
+        DycoVec::new()
+    }
+}
+
 impl<T> FromIterator<T> for DycoVec<T> {
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
         DycoVec::from_boxed_slice(iter.into_iter().collect::<Vec<_>>().into_boxed_slice())
