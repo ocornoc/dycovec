@@ -8,4 +8,19 @@ description = "A dynamically-allocated, concurrent vector"
 repository = "https://github.com/ocornoc/dycovec"
 include = ["src/**/*", "LICENSE-*", "README.md"]
 
-[dependencies]
+[dev-dependencies]
+criterion = "0.3"
+sharded-slab = "0.1"
+evmap = "10"
+evmap-derive = "0.2"
+rayon = "1.5"
+crossbeam = "0.8"
+parking_lot = "0.11"
+
+[[bench]]
+name = "seq_comparison"
+harness = false
+
+[[bench]]
+name = "par_comparison"
+harness = false
