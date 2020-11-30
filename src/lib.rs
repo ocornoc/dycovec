@@ -16,7 +16,7 @@ use core::{
     sync::atomic::{AtomicU8, AtomicUsize, Ordering},
 };
 use alloc::{vec::Vec, boxed::Box};
-use segment::Segment;
+use segment::{Segment, new_omd};
 
 mod segment;
 
@@ -61,7 +61,7 @@ const SEGMENTS: u8 = 32;
 /// The only other time the lock is locked is during cloning as to prevent an
 /// incomplete allocation from providing bad data for the clone.
 pub struct DycoVec<T> {
-    segs: [Segment<T>; SEGMENTS as usize],
+    segs: Box<[Segment<T>; SEGMENTS as usize]>,
     cur_seg: AtomicU8,
     len: AtomicUsize,
 }
@@ -70,7 +70,7 @@ impl<T: Clone> Clone for DycoVec<T> {
     fn clone(&self) -> Self {
         if Self::T_ZST {
             DycoVec {
-                segs: Self::DEFAULT_SEGS,
+                segs: Box::new(Self::default_segs()),
                 cur_seg: AtomicU8::new(0),
                 len: AtomicUsize::new(self.len.load(Ordering::Acquire)),
             }
@@ -99,10 +99,7 @@ impl<T: Clone> Clone for DycoVec<T> {
     }
 
     fn clone_from(&mut self, source: &Self) {
-        for i in 0..SEGMENTS as usize {
-            self.segs[i].clone_from(&source.segs[i]);
-        }
-
+        self.segs.clone_from(&source.segs);
         *self.cur_seg.get_mut() = source.cur_seg.load(Ordering::Acquire);
         *self.len.get_mut() = source.len.load(Ordering::Acquire);
     }
@@ -115,14 +112,11 @@ impl<T: Hash> Hash for DycoVec<T> {
 }
 
 impl<T> From<DycoVec<T>> for Vec<T> {
-    fn from(dv: DycoVec<T>) -> Self {
+    fn from(mut dv: DycoVec<T>) -> Self {
         let mut v = Vec::with_capacity(dv.len.into_inner());
 
         for i in 0..=dv.cur_seg.into_inner() {
-            v.extend(
-                // SAFE: `dv` is consumed
-                unsafe { (&dv.segs[i as usize] as *const Segment<T>).read() }
-            )
+            v.extend(core::mem::replace(&mut dv.segs[i as usize], Segment::new_null(0)))
         }
 
         v
@@ -220,52 +214,15 @@ impl<T: Ord> Ord for DycoVec<T> {
 }
 
 impl<T> DycoVec<T> {
-    // Scary, but the copying is actually intentional.
-    #[allow(clippy::declare_interior_mutable_const)]
-    const DEFAULT_SEGS: [Segment<T>; SEGMENTS as usize] = [
-        Segment::new_null(CAPACITIES[0]),
-        Segment::new_null(CAPACITIES[1]),
-        Segment::new_null(CAPACITIES[2]),
-        Segment::new_null(CAPACITIES[3]),
-        Segment::new_null(CAPACITIES[4]),
-        Segment::new_null(CAPACITIES[5]),
-        Segment::new_null(CAPACITIES[6]),
-        Segment::new_null(CAPACITIES[7]),
-        Segment::new_null(CAPACITIES[8]),
-        Segment::new_null(CAPACITIES[9]),
-        Segment::new_null(CAPACITIES[10]),
-        Segment::new_null(CAPACITIES[11]),
-        Segment::new_null(CAPACITIES[12]),
-        Segment::new_null(CAPACITIES[13]),
-        Segment::new_null(CAPACITIES[14]),
-        Segment::new_null(CAPACITIES[15]),
-        Segment::new_null(CAPACITIES[16]),
-        Segment::new_null(CAPACITIES[17]),
-        Segment::new_null(CAPACITIES[18]),
-        Segment::new_null(CAPACITIES[19]),
-        Segment::new_null(CAPACITIES[20]),
-        Segment::new_null(CAPACITIES[21]),
-        Segment::new_null(CAPACITIES[22]),
-        Segment::new_null(CAPACITIES[23]),
-        Segment::new_null(CAPACITIES[24]),
-        Segment::new_null(CAPACITIES[25]),
-        Segment::new_null(CAPACITIES[26]),
-        Segment::new_null(CAPACITIES[27]),
-        Segment::new_null(CAPACITIES[28]),
-        Segment::new_null(CAPACITIES[29]),
-        Segment::new_null(CAPACITIES[30]),
-        Segment::new_null(CAPACITIES[31]),
-    ];
-    
     const T_ZST: bool = core::mem::size_of::<T>() == 0;
 
     /// Create a new [`DycoVec`] with zero length.
     ///
     /// The [`DycoVec`] will no allocate memory until elements are pushed onto
     /// it.
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         DycoVec {
-            segs: Self::DEFAULT_SEGS,
+            segs: Box::new(Self::default_segs()),
             cur_seg: AtomicU8::new(0),
             len: AtomicUsize::new(0),
         }
@@ -277,7 +234,7 @@ impl<T> DycoVec<T> {
         let mut seg_id = 1;
         let len = s.len();
         let (mut current, mut leftover) = s.split_at_mut(CAPACITIES[0].min(len));
-        let mut segs = Self::DEFAULT_SEGS;
+        let mut segs = Box::new(Self::default_segs());
         segs[0] = Segment::from_slice(
             &mut core::mem::take(&mut current),
             CAPACITIES[0],
@@ -376,7 +333,7 @@ impl<T> DycoVec<T> {
         *self.len.get_mut() = 0;
         *self.cur_seg.get_mut() = 0;
 
-        for seg in &mut self.segs {
+        for seg in self.segs.as_mut() {
             seg.clear()
         }
     }
@@ -386,15 +343,14 @@ impl<T> DycoVec<T> {
         self.len.fetch_add(1, Ordering::Release);
 
         let mut seg_id = self.cur_seg.load(Ordering::Acquire);
-        let tref = &mut (&t as *const _);
+        let mut tref = new_omd(t);
         let mut out;
 
-        while {out = self.segs[seg_id as usize].push(tref); out.is_none()} {
+        while {out = self.segs[seg_id as usize].push(&mut tref); out.is_none()} {
             self.cur_seg.fetch_max(seg_id + 1, Ordering::Release);
             seg_id = self.cur_seg.load(Ordering::Acquire);
         }
 
-        core::mem::forget(t);
         seg_lid_to_id(seg_id, out.unwrap())
     }
 
@@ -419,6 +375,43 @@ impl<T> DycoVec<T> {
     /// Consumes the [`DycoVec`], returning a [`Vec`] containing the elements.
     pub fn into_vec(self) -> Vec<T> {
         self.into()
+    }
+
+    const fn default_segs() -> [Segment<T>; SEGMENTS as usize] {
+        [
+            Segment::new_null(CAPACITIES[0]),
+            Segment::new_null(CAPACITIES[1]),
+            Segment::new_null(CAPACITIES[2]),
+            Segment::new_null(CAPACITIES[3]),
+            Segment::new_null(CAPACITIES[4]),
+            Segment::new_null(CAPACITIES[5]),
+            Segment::new_null(CAPACITIES[6]),
+            Segment::new_null(CAPACITIES[7]),
+            Segment::new_null(CAPACITIES[8]),
+            Segment::new_null(CAPACITIES[9]),
+            Segment::new_null(CAPACITIES[10]),
+            Segment::new_null(CAPACITIES[11]),
+            Segment::new_null(CAPACITIES[12]),
+            Segment::new_null(CAPACITIES[13]),
+            Segment::new_null(CAPACITIES[14]),
+            Segment::new_null(CAPACITIES[15]),
+            Segment::new_null(CAPACITIES[16]),
+            Segment::new_null(CAPACITIES[17]),
+            Segment::new_null(CAPACITIES[18]),
+            Segment::new_null(CAPACITIES[19]),
+            Segment::new_null(CAPACITIES[20]),
+            Segment::new_null(CAPACITIES[21]),
+            Segment::new_null(CAPACITIES[22]),
+            Segment::new_null(CAPACITIES[23]),
+            Segment::new_null(CAPACITIES[24]),
+            Segment::new_null(CAPACITIES[25]),
+            Segment::new_null(CAPACITIES[26]),
+            Segment::new_null(CAPACITIES[27]),
+            Segment::new_null(CAPACITIES[28]),
+            Segment::new_null(CAPACITIES[29]),
+            Segment::new_null(CAPACITIES[30]),
+            Segment::new_null(CAPACITIES[31]),
+    ]
     }
 }
 
@@ -566,7 +559,6 @@ impl<'a, T: 'a> Iterator for Iter<'a, T> {
 
 #[cfg(test)]
 mod test {
-    #[allow(unused_imports)]
     use super::*;
 
     #[test]
@@ -741,5 +733,53 @@ mod test {
     #[test]
     fn max_id() {
         assert_eq!(MAX_ID + 1, CAPACITIES.iter().sum())
+    }
+
+    #[test]
+    fn drop_test() {
+        static DTB: AtomicUsize = AtomicUsize::new(0);
+        DTB.store(0, Ordering::Release);
+
+        struct DropTest(Box<usize>);
+
+        impl Drop for DropTest {
+            fn drop(&mut self) {
+                DTB.fetch_add(1, Ordering::Release);
+            }
+        }
+
+        let dv = DycoVec::new();
+
+        for i in 0..(CAPACITIES[0] + CAPACITIES[1]) {
+            dv.push(DropTest(Box::new(i)));
+        }
+
+        assert_eq!(DTB.load(Ordering::Acquire), 0);
+        core::mem::drop(dv);
+        assert_eq!(DTB.load(Ordering::Acquire), CAPACITIES[0] + CAPACITIES[1]);
+    }
+
+    #[test]
+    fn drop_test_zst() {
+        static DTB: AtomicUsize = AtomicUsize::new(0);
+        DTB.store(0, Ordering::Release);
+
+        struct DropTest;
+
+        impl Drop for DropTest {
+            fn drop(&mut self) {
+                DTB.fetch_add(1, Ordering::Release);
+            }
+        }
+
+        let dv = DycoVec::new();
+
+        for _ in 0..(CAPACITIES[0] + CAPACITIES[1]) {
+            dv.push(DropTest);
+        }
+
+        assert_eq!(DTB.load(Ordering::Acquire), 0);
+        core::mem::drop(dv);
+        assert_eq!(DTB.load(Ordering::Acquire), CAPACITIES[0] + CAPACITIES[1]);
     }
 }

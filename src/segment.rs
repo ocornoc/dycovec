@@ -1,5 +1,6 @@
 use core::{
     ptr::NonNull,
+    mem::ManuallyDrop,
     hash::{Hash, Hasher},
     ops::{Deref, DerefMut},
     convert::{AsRef, AsMut, TryFrom},
@@ -11,6 +12,27 @@ use alloc::{
     boxed::Box,
     alloc::{alloc, dealloc, Layout},
 };
+
+type OMD<T> = Option<ManuallyDrop<T>>;
+
+pub(crate) fn new_omd<T>(t: T) -> OMD<T> {
+    Some(ManuallyDrop::new(t))
+}
+
+unsafe fn steal_omd<T>(omd_t: &mut OMD<T>) -> T {
+    #[cold]
+    fn double_free() -> ! {
+        panic!("double steal on OMD")
+    }
+
+    if let Some(mt) = omd_t {
+        let t = ManuallyDrop::take(mt);
+        *omd_t = None;
+        t
+    } else {
+        double_free()
+    }
+}
 
 pub(crate) struct Segment<T> {
     /// A pointer to the beginning of the contiguous array.
@@ -81,7 +103,13 @@ impl<T: Clone> Clone for Segment<T> {
 
 impl<T> Drop for Segment<T> {
     fn drop(&mut self) {
-        if self.head.get_mut().is_null() {
+        if core::mem::needs_drop::<T>() {
+            for v in self.as_slice_mut() {
+                unsafe { core::ptr::drop_in_place(v) };
+            }
+        }
+        
+        if !self.head.get_mut().is_null() {
             let lyt = Layout::array::<T>(self.cap).unwrap();
             unsafe { dealloc(*self.head.get_mut() as _, lyt) };
         }
@@ -276,7 +304,7 @@ impl<T> Segment<T> {
     }
 
     pub fn clear(&mut self) {
-        if self.head.get_mut().is_null() {
+        if !self.head.get_mut().is_null() {
             for i in 0..*self.len.get_mut() {
                 /* SAFE:
                     * the pointer is valid for reads and writes
@@ -306,9 +334,11 @@ impl<T> Segment<T> {
     }
 
     #[must_use]
-    pub fn push(&self, t: &mut *const T) -> Option<usize> {
+    pub fn push(&self, t: &mut OMD<T>) -> Option<usize> {
         if Self::T_ZST {
             let offset = self.len.fetch_add(1, Ordering::AcqRel);
+
+            *t = None;
 
             if offset < self.cap {
                 Some(offset)
@@ -327,7 +357,7 @@ impl<T> Segment<T> {
 
             unsafe {
                 head = head.add(offset);
-                *head = core::mem::replace(t, core::ptr::null()).read();
+                head.write(steal_omd(t));
             }
 
             Some(offset)
@@ -362,7 +392,6 @@ impl<T> Segment<T> {
 
 #[cfg(test)]
 mod test {
-    #[allow(unused_imports)]
     use super::*;
 
     fn my_alloc<T>(cap: usize) -> *mut T {
@@ -396,21 +425,43 @@ mod test {
     fn push_is_init() {
         let seg = Segment::new_null(1);
         assert!(!seg.is_initialized());
-        assert!(seg.push(&mut (&true as *const _)).is_some());
+        assert!(seg.push(&mut new_omd(true)).is_some());
         assert!(seg.is_initialized());
+    }
+
+    #[test]
+    fn push_nulls() {
+        let seg = Segment::new_null(1);
+        let mut x = new_omd(1);
+        let mut y = new_omd(2);
+        assert!(seg.push(&mut x).is_some());
+        assert!(seg.push(&mut y).is_none());
+        assert!(x.is_none());
+        assert!(y.is_some());
+    }
+
+    #[test]
+    fn push_nulls_zst() {
+        let seg = Segment::new_null(1);
+        let mut x = new_omd(());
+        let mut y = new_omd(());
+        assert!(seg.push(&mut x).is_some());
+        assert!(seg.push(&mut y).is_none());
+        assert!(x.is_none());
+        assert!(y.is_none());
     }
 
     #[test]
     fn len() {
         let seg = Segment::new_null(5);
         assert_eq!(seg.len(), 0);
-        assert!(seg.push(&mut (&1 as *const _)).is_some());
-        assert!(seg.push(&mut (&2 as *const _)).is_some());
-        assert!(seg.push(&mut (&3 as *const _)).is_some());
-        assert!(seg.push(&mut (&4 as *const _)).is_some());
-        assert!(seg.push(&mut (&5 as *const _)).is_some());
+        assert!(seg.push(&mut new_omd(1)).is_some());
+        assert!(seg.push(&mut new_omd(2)).is_some());
+        assert!(seg.push(&mut new_omd(3)).is_some());
+        assert!(seg.push(&mut new_omd(4)).is_some());
+        assert!(seg.push(&mut new_omd(5)).is_some());
         assert_eq!(seg.len(), 5);
-        assert!(seg.push(&mut (&6 as *const _)).is_none());
+        assert!(seg.push(&mut new_omd(6)).is_none());
         assert_eq!(seg.len(), 5);
     }
 
@@ -418,74 +469,76 @@ mod test {
     fn len_zst() {
         let seg = Segment::new_null(5);
         assert_eq!(seg.len(), 0);
-        assert!(seg.push(&mut (&() as *const _)).is_some());
-        assert!(seg.push(&mut (&() as *const _)).is_some());
-        assert!(seg.push(&mut (&() as *const _)).is_some());
-        assert!(seg.push(&mut (&() as *const _)).is_some());
-        assert!(seg.push(&mut (&() as *const _)).is_some());
+        assert!(seg.push(&mut new_omd(())).is_some());
+        assert!(seg.push(&mut new_omd(())).is_some());
+        assert!(seg.push(&mut new_omd(())).is_some());
+        assert!(seg.push(&mut new_omd(())).is_some());
+        assert!(seg.push(&mut new_omd(())).is_some());
         assert_eq!(seg.len(), 5);
-        assert!(seg.push(&mut (&() as *const _)).is_none());
+        assert!(seg.push(&mut new_omd(())).is_none());
         assert_eq!(seg.len(), 5);
     }
 
     #[test]
     fn as_slice() {
         let seg = Segment::new_null(3);
-        assert!(seg.push(&mut (&1 as *const _)).is_some());
-        assert!(seg.push(&mut (&2 as *const _)).is_some());
-        assert!(seg.push(&mut (&3 as *const _)).is_some());
+        assert!(seg.push(&mut new_omd(1)).is_some());
+        assert!(seg.push(&mut new_omd(2)).is_some());
+        assert!(seg.push(&mut new_omd(3)).is_some());
         assert_eq!(seg.as_slice(), &[1, 2, 3]);
-        assert!(seg.push(&mut (&4 as *const _)).is_none());
+        assert!(seg.push(&mut new_omd(4)).is_none());
         assert_eq!(seg.as_slice(), &[1, 2, 3]);
     }
 
     #[test]
     fn as_slice_zst() {
         let seg = Segment::new_null(3);
-        assert!(seg.push(&mut (&() as *const _)).is_some());
-        assert!(seg.push(&mut (&() as *const _)).is_some());
-        assert!(seg.push(&mut (&() as *const _)).is_some());
+        assert!(seg.push(&mut new_omd(())).is_some());
+        assert!(seg.push(&mut new_omd(())).is_some());
+        assert!(seg.push(&mut new_omd(())).is_some());
         assert_eq!(seg.as_slice(), &[(), (), ()]);
-        assert!(seg.push(&mut (&() as *const _)).is_none());
+        assert!(seg.push(&mut new_omd(())).is_none());
         assert_eq!(seg.as_slice(), &[(), (), ()]);
     }
 
     #[test]
     fn clear() {
         let mut seg = Segment::new_null(3);
-        assert!(seg.push(&mut (&1 as *const _)).is_some());
-        assert!(seg.push(&mut (&2 as *const _)).is_some());
-        assert!(seg.push(&mut (&3 as *const _)).is_some());
-        assert!(seg.push(&mut (&4 as *const _)).is_none());
+        assert!(seg.push(&mut new_omd(1)).is_some());
+        assert!(seg.push(&mut new_omd(2)).is_some());
+        assert!(seg.push(&mut new_omd(3)).is_some());
+        assert!(seg.push(&mut new_omd(4)).is_none());
         seg.clear();
         assert_eq!(seg.len(), 0);
-        assert!(seg.push(&mut (&1 as *const _)).is_some());
-        assert!(seg.push(&mut (&2 as *const _)).is_some());
-        assert!(seg.push(&mut (&3 as *const _)).is_some());
-        assert!(seg.push(&mut (&4 as *const _)).is_none());
+        assert!(seg.push(&mut new_omd(1)).is_some());
+        assert!(seg.push(&mut new_omd(2)).is_some());
+        assert!(seg.push(&mut new_omd(3)).is_some());
+        assert!(seg.push(&mut new_omd(4)).is_none());
+        assert_eq!(seg.len(), 3);
     }
 
     #[test]
     fn clear_zst() {
         let mut seg = Segment::new_null(3);
-        assert!(seg.push(&mut (&() as *const _)).is_some());
-        assert!(seg.push(&mut (&() as *const _)).is_some());
-        assert!(seg.push(&mut (&() as *const _)).is_some());
-        assert!(seg.push(&mut (&() as *const _)).is_none());
+        assert!(seg.push(&mut new_omd(())).is_some());
+        assert!(seg.push(&mut new_omd(())).is_some());
+        assert!(seg.push(&mut new_omd(())).is_some());
+        assert!(seg.push(&mut new_omd(())).is_none());
         seg.clear();
         assert_eq!(seg.len(), 0);
-        assert!(seg.push(&mut (&() as *const _)).is_some());
-        assert!(seg.push(&mut (&() as *const _)).is_some());
-        assert!(seg.push(&mut (&() as *const _)).is_some());
-        assert!(seg.push(&mut (&() as *const _)).is_none());
+        assert!(seg.push(&mut new_omd(())).is_some());
+        assert!(seg.push(&mut new_omd(())).is_some());
+        assert!(seg.push(&mut new_omd(())).is_some());
+        assert!(seg.push(&mut new_omd(())).is_none());
+        assert_eq!(seg.len(), 3);
     }
 
     #[test]
     fn index() {
         let seg = Segment::new_null(3);
-        assert!(seg.push(&mut (&1 as *const _)).is_some());
-        assert!(seg.push(&mut (&2 as *const _)).is_some());
-        assert!(seg.push(&mut (&3 as *const _)).is_some());
+        assert!(seg.push(&mut new_omd(1)).is_some());
+        assert!(seg.push(&mut new_omd(2)).is_some());
+        assert!(seg.push(&mut new_omd(3)).is_some());
         assert_eq!(seg[0], 1);
         assert_eq!(seg[1], 2);
         assert_eq!(seg[2], 3);
@@ -494,9 +547,9 @@ mod test {
     #[test]
     fn index_zst() {
         let seg = Segment::new_null(3);
-        assert!(seg.push(&mut (&() as *const _)).is_some());
-        assert!(seg.push(&mut (&() as *const _)).is_some());
-        assert!(seg.push(&mut (&() as *const _)).is_some());
+        assert!(seg.push(&mut new_omd(())).is_some());
+        assert!(seg.push(&mut new_omd(())).is_some());
+        assert!(seg.push(&mut new_omd(())).is_some());
         assert_eq!(seg[0], ());
         assert_eq!(seg[1], ());
         assert_eq!(seg[2], ());
@@ -505,9 +558,9 @@ mod test {
     #[test]
     fn index_mut() {
         let mut seg = Segment::new_null(3);
-        assert!(seg.push(&mut (&1 as *const _)).is_some());
-        assert!(seg.push(&mut (&2 as *const _)).is_some());
-        assert!(seg.push(&mut (&3 as *const _)).is_some());
+        assert!(seg.push(&mut new_omd(1)).is_some());
+        assert!(seg.push(&mut new_omd(2)).is_some());
+        assert!(seg.push(&mut new_omd(3)).is_some());
         seg[0] = 3;
         seg[1] = 2;
         seg[2] = 1;
@@ -519,14 +572,66 @@ mod test {
     #[test]
     fn index_mut_zst() {
         let mut seg = Segment::new_null(3);
-        assert!(seg.push(&mut (&() as *const _)).is_some());
-        assert!(seg.push(&mut (&() as *const _)).is_some());
-        assert!(seg.push(&mut (&() as *const _)).is_some());
+        assert!(seg.push(&mut new_omd(())).is_some());
+        assert!(seg.push(&mut new_omd(())).is_some());
+        assert!(seg.push(&mut new_omd(())).is_some());
         seg[0] = ();
         seg[1] = ();
         seg[2] = ();
         assert_eq!(seg[0], ());
         assert_eq!(seg[1], ());
         assert_eq!(seg[2], ());
+    }
+
+    #[test]
+    fn drop_test() {
+        static DTB: AtomicUsize = AtomicUsize::new(0);
+        DTB.store(0, Ordering::Release);
+
+        struct DropTest(Box<usize>);
+
+        impl Drop for DropTest {
+            fn drop(&mut self) {
+                DTB.fetch_add(1, Ordering::Release);
+            }
+        }
+
+        let dv = Segment::new_null(200);
+
+        for i in 0..200 {
+            let mut x = new_omd(DropTest(Box::new(i)));
+            assert!(dv.push(&mut x).is_some());
+            assert!(x.is_none());
+        }
+
+        assert_eq!(DTB.load(Ordering::Acquire), 0);
+        core::mem::drop(dv);
+        assert_eq!(DTB.load(Ordering::Acquire), 200);
+    }
+
+    #[test]
+    fn drop_test_zst() {
+        static DTB: AtomicUsize = AtomicUsize::new(0);
+        DTB.store(0, Ordering::Release);
+
+        struct DropTest;
+
+        impl Drop for DropTest {
+            fn drop(&mut self) {
+                DTB.fetch_add(1, Ordering::Release);
+            }
+        }
+
+        let dv = Segment::new_null(200);
+
+        for _ in 0..200 {
+            let mut x = new_omd(DropTest);
+            assert!(dv.push(&mut x).is_some());
+            assert!(x.is_none());
+        }
+
+        assert_eq!(DTB.load(Ordering::Acquire), 0);
+        core::mem::drop(dv);
+        assert_eq!(DTB.load(Ordering::Acquire), 200);
     }
 }
