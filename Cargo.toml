@@ -18,9 +18,9 @@ crossbeam = "0.8"
 parking_lot = "0.11"
 
 [[bench]]
-name = "seq_comparison"
+name = "par_2d"
 harness = false
 
 [[bench]]
-name = "par_comparison"
+name = "seq_2d"
 harness = false
