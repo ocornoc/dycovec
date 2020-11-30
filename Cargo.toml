@@ -24,3 +24,11 @@ harness = false
 [[bench]]
 name = "seq_2d"
 harness = false
+
+[[bench]]
+name = "par_1d"
+harness = false
+
+[[bench]]
+name = "seq_1d"
+harness = false
