@@ -203,25 +203,25 @@ mod vs_2d {
 
 fn rectangle_push_only(c: &mut Criterion) {
     {
-        let mut po_75x75 = c.benchmark_group("2D, 75 x 75, Push Only");
+        let mut po_75x75 = c.benchmark_group("Par 2D, 75 x 75, Push Only");
         vs_2d::bench_2d_small(&mut po_75x75, 75, 75);
         vs_2d::bench_2d_big(&mut po_75x75, 75, 75);
     }
 
     {
-        let mut po_100x100 = c.benchmark_group("2D, 100 x 100, Push Only");
+        let mut po_100x100 = c.benchmark_group("Par 2D, 100 x 100, Push Only");
         vs_2d::bench_2d_small(&mut po_100x100, 100, 100);
         vs_2d::bench_2d_big(&mut po_100x100, 100, 100);
     }
 
     {
-        let mut po_200x50 = c.benchmark_group("2D, 200 x 50, Push Only");
+        let mut po_200x50 = c.benchmark_group("Par 2D, 200 x 50, Push Only");
         vs_2d::bench_2d_small(&mut po_200x50, 200, 50);
         vs_2d::bench_2d_big(&mut po_200x50, 200, 50);
     }
 
     {
-        let mut po_50x200 = c.benchmark_group("2D, 50 x 200, Push Only");
+        let mut po_50x200 = c.benchmark_group("Par 2D, 50 x 200, Push Only");
         vs_2d::bench_2d_small(&mut po_50x200, 50, 200);
         vs_2d::bench_2d_big(&mut po_50x200, 50, 200);
     }
