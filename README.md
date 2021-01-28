@@ -2,8 +2,8 @@
 
 `DycoVec`s are thread-safe vectors that support random access, iteration,
 and tail pushing in an `O(1)`, wait-free\* manner, *and that's it*! For
-the sake of performance, there is no support for *concurrent* clearing or
-deletion, though this still can be performed given a mutable reference.
+the sake of performance, there is no support for *concurrent* clearing,
+though this still can be performed given a mutable reference.
 
 ```rust
 use dycovec::DycoVec;
